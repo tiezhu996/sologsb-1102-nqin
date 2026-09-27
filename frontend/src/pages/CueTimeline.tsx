@@ -118,6 +118,18 @@ export default function CueTimeline() {
   const durationSecond = scene ? Math.max(1, scene.durationMin) * 60 : 60;
   const ticks = useMemo(() => buildRulerTicks(durationSecond), [durationSecond]);
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.atSecond - b.atSecond), [cues]);
+  /**
+   * 超出本场时长的鼓点（如巡演压短场次后落出场外的点）：
+   * 标为「超出待重排」，不计入已过与待走；秒点挪回时长以内或时长改回即自动恢复。
+   */
+  const inRangeCues = useMemo(
+    () => sortedCues.filter((cue) => cue.atSecond <= durationSecond),
+    [sortedCues, durationSecond],
+  );
+  const overflowCues = useMemo(
+    () => sortedCues.filter((cue) => cue.atSecond > durationSecond),
+    [sortedCues, durationSecond],
+  );
 
   /** 试排播放：按秒推进游标，到时辰停止 */
   const lastFrameRef = useRef<number>(0);
@@ -145,14 +157,14 @@ export default function CueTimeline() {
     };
   }, [playing, durationSecond]);
 
-  /** 播放到鼓点秒点时高亮该鼓点 */
+  /** 播放到鼓点秒点时高亮该鼓点（超出场外的鼓点不再响起，跳过高亮） */
   useEffect(() => {
-    const passed = sortedCues.filter((cue) => cue.atSecond <= cursorSecond);
+    const passed = inRangeCues.filter((cue) => cue.atSecond <= cursorSecond);
     const last = passed.length > 0 ? passed[passed.length - 1] : null;
     if (last && cursorSecond - last.atSecond < 1.6) {
       setActiveCueId(last.id);
     }
-  }, [cursorSecond, sortedCues]);
+  }, [cursorSecond, inRangeCues]);
 
   const rulerRef = useRef<HTMLDivElement | null>(null);
 
@@ -278,6 +290,7 @@ export default function CueTimeline() {
             </Button>
           </Tooltip>
           {activeCueId === record.id ? <Tag color="gold">当前</Tag> : null}
+          {record.atSecond > durationSecond ? <Tag color="warning">超出待重排</Tag> : null}
         </Space>
       ),
     },
@@ -372,7 +385,8 @@ export default function CueTimeline() {
   const sceneIndex = items.findIndex((item) => item.scene.id === sceneId);
   const prevItem = sceneIndex > 0 ? items[sceneIndex - 1] : null;
   const nextItem = sceneIndex >= 0 && sceneIndex < items.length - 1 ? items[sceneIndex + 1] : null;
-  const passedCount = sortedCues.filter((cue) => cue.atSecond <= cursorSecond).length;
+  const passedCount = inRangeCues.filter((cue) => cue.atSecond <= cursorSecond).length;
+  const upcomingCues = inRangeCues.filter((cue) => cue.atSecond > cursorSecond);
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -387,6 +401,7 @@ export default function CueTimeline() {
             </Typography.Title>
             {play ? <Tag color="#7a1f1f">{play.title}</Tag> : null}
             <Tag color="gold">整剧合计 {totalMinute} 分钟</Tag>
+            {overflowCues.length > 0 ? <Tag color="warning">超出待重排 {overflowCues.length} 处</Tag> : null}
           </Space>
           <Space wrap>
             <Button icon={<PlusOutlined />} type="primary" onClick={() => openCreate()}>
@@ -416,7 +431,7 @@ export default function CueTimeline() {
             <Statistic title="试排游标" value={secondsToTimecode(cursorSecond)} className="gb-mono" />
           </Col>
           <Col xs={12} md={6}>
-            <Statistic title="已过鼓点" value={passedCount} suffix={`/ ${cues.length}`} />
+            <Statistic title="已过鼓点" value={passedCount} suffix={`/ ${inRangeCues.length}`} />
           </Col>
         </Row>
       </div>
@@ -513,7 +528,7 @@ export default function CueTimeline() {
                     <span className="gb-mono">{secondsToTimecode(tick)}</span>
                   </div>
                 ))}
-                {sortedCues.map((cue) => (
+                {inRangeCues.map((cue) => (
                   <div
                     key={cue.id}
                     className="gb-cue-dot"
@@ -542,6 +557,28 @@ export default function CueTimeline() {
                 <div className="gb-playhead" style={{ left: `${secondsToPercent(cursorSecond, durationSecond)}%` }} />
               </div>
             </div>
+
+            {overflowCues.length > 0 ? (
+              <div className="gb-cue-overflow-lane">
+                <Tag color="warning">超出待重排</Tag>
+                {overflowCues.map((cue) => (
+                  <Button
+                    key={cue.id}
+                    size="small"
+                    type="dashed"
+                    onClick={() => openEdit(cue)}
+                    title="点击编辑，把秒点挪回时长以内"
+                  >
+                    <span className="gb-mono">{secondsToTimecode(cue.atSecond)}</span>
+                    &nbsp;
+                    {BEAT_NAME_LABEL[cue.beatName]}·{INSTRUMENT_LABEL[cue.instrument]}
+                  </Button>
+                ))}
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  超出本场 {secondsToTimecode(durationSecond)} 时长，连排不会再响，也不计入已过与待走；挪回秒点或改回时长即恢复。
+                </Typography.Text>
+              </div>
+            ) : null}
 
             <Space style={{ width: '100%', marginTop: 12 }} wrap>
               <Typography.Text type="secondary">游标定位</Typography.Text>
@@ -573,11 +610,11 @@ export default function CueTimeline() {
               <Button icon={<ThunderboltOutlined />} onClick={() => openCreate(Math.round(cursorSecond))}>
                 在游标 {secondsToTimecode(Math.round(cursorSecond))} 插点
               </Button>
-              {followCursor && sortedCues.length > 0 ? (
+              {followCursor && inRangeCues.length > 0 ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   最近鼓点：
                   {(() => {
-                    const passed = sortedCues.filter((cue) => cue.atSecond <= cursorSecond);
+                    const passed = inRangeCues.filter((cue) => cue.atSecond <= cursorSecond);
                     const nearest = passed.length > 0 ? passed[passed.length - 1] : null;
                     return nearest
                       ? `${secondsToTimecode(nearest.atSecond)} ${BEAT_NAME_LABEL[nearest.beatName]}（${
@@ -608,6 +645,7 @@ export default function CueTimeline() {
               <Typography.Text strong>鼓点清单（按秒点对齐场次时间轴）</Typography.Text>
               <Space size={8}>
                 <Tag color="gold">共 {cues.length} 处</Tag>
+                {overflowCues.length > 0 ? <Tag color="warning">超出待重排 {overflowCues.length} 处</Tag> : null}
                 {cues.length > 0 ? (
                   <Tag>
                     平均间隔{' '}
@@ -712,24 +750,19 @@ export default function CueTimeline() {
               type="info"
               showIcon
               icon={<SoundOutlined />}
-              message={`当前游标 ${secondsToTimecode(Math.floor(cursorSecond))}：${
-                sortedCues.filter((cue) => cue.atSecond <= cursorSecond).length
-              } 处鼓点已过，剩余 ${
-                sortedCues.filter((cue) => cue.atSecond > cursorSecond).length
-              } 处待走。`}
+              message={`当前游标 ${secondsToTimecode(Math.floor(cursorSecond))}：${passedCount} 处鼓点已过，剩余 ${
+                upcomingCues.length
+              } 处待走。${
+                overflowCues.length > 0 ? `另有 ${overflowCues.length} 处超出待重排，不计入统计。` : ''
+              }`}
               description={
-                sortedCues.filter((cue) => cue.atSecond > cursorSecond).length > 0
-                  ? `下一处：${secondsToTimecode(
-                      sortedCues.filter((cue) => cue.atSecond > cursorSecond)[0].atSecond,
-                    )} ${
-                      BEAT_NAME_LABEL[sortedCues.filter((cue) => cue.atSecond > cursorSecond)[0].beatName]
-                    }，领奏 ${
-                      operatorNameOf(
-                        operators,
-                        sortedCues.filter((cue) => cue.atSecond > cursorSecond)[0].leadOperator,
-                      )
-                    }。`
-                  : '本场鼓点已全部走完，可继续下一场编排。'
+                upcomingCues.length > 0
+                  ? `下一处：${secondsToTimecode(upcomingCues[0].atSecond)} ${
+                      BEAT_NAME_LABEL[upcomingCues[0].beatName]
+                    }，领奏 ${operatorNameOf(operators, upcomingCues[0].leadOperator)}。`
+                  : overflowCues.length > 0
+                    ? `时长内鼓点已走完；${overflowCues.length} 处超出待重排的鼓点落出场外，不会再响，挪回秒点或改回时长即恢复。`
+                    : '本场鼓点已全部走完，可继续下一场编排。'
               }
             />
           </div>

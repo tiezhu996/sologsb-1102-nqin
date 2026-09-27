@@ -39,9 +39,10 @@ import { useSceneStore } from '../stores/sceneStore';
 import { useOperatorStore } from '../stores/operatorStore';
 import { ROUTES } from '../router';
 import { SHADOW_SCREEN_LABEL, SHADOW_SCREEN_OPTIONS, type SceneDraft, createEmptySceneDraft } from '../types/scene';
-import { minutesToReadable } from '../utils/timecode';
+import { BEAT_NAME_LABEL, INSTRUMENT_LABEL } from '../types/cue';
+import { minutesToReadable, secondsToTimecode } from '../utils/timecode';
 import { formatStamp } from '../utils/uuid';
-import type { SceneRow } from '../utils/db';
+import { listCuesByScene, type CueRow, type SceneRow } from '../utils/db';
 
 export default function SceneBoard() {
   const { id: playId = '' } = useParams<{ id: string }>();
@@ -425,7 +426,7 @@ function SceneDetailPanel({
   onRoles,
   onCues,
 }: SceneDetailPanelProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const scene = useSceneStore((state) => state.scenes.find((item) => item.id === sceneId) ?? null);
   const [title, setTitle] = useState(scene?.title ?? '');
   const [durationMin, setDurationMin] = useState(scene?.durationMin ?? 12);
@@ -441,16 +442,62 @@ function SceneDetailPanel({
     stageNote !== scene.stageNote ||
     screen !== scene.needsShadowScreen;
 
-  const save = async () => {
-    setSaving(true);
-    await onSave(sceneId, {
-      title: title.trim() || scene.title,
-      durationMin: Math.max(1, Math.round(durationMin)),
-      stageNote: stageNote.trim(),
-      needsShadowScreen: screen,
+  /** 改短时长前先列出将落出场外的鼓点（秒点 + 锣鼓点名），场务确认后才落库 */
+  const confirmOverflowSave = (nextDurationMin: number, overflowed: CueRow[]): Promise<boolean> =>
+    new Promise((resolve) => {
+      modal.confirm({
+        title: `时长改为 ${nextDurationMin} 分钟，${overflowed.length} 处鼓点落出场外`,
+        content: (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Text>
+              以下鼓点的秒点超出新时长，保存后将在时间轴上标为「超出待重排」，不再计入已过与待走：
+            </Typography.Text>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {overflowed.map((cue) => (
+                <li key={cue.id}>
+                  <Typography.Text className="gb-mono">{secondsToTimecode(cue.atSecond)}</Typography.Text>
+                  {` 「${BEAT_NAME_LABEL[cue.beatName]}」（${INSTRUMENT_LABEL[cue.instrument]}）`}
+                </li>
+              ))}
+            </ul>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              之后把秒点挪回时长以内，或把时长改回来，标记即消失。
+            </Typography.Text>
+          </Space>
+        ),
+        okText: '场务确认，照样保存',
+        cancelText: '先不改',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
     });
-    setSaving(false);
-    message.success('场次明细已保存');
+
+  const save = async () => {
+    const nextDurationMin = Math.max(1, Math.round(durationMin));
+    setSaving(true);
+    try {
+      if (nextDurationMin !== scene.durationMin) {
+        const nextDurationSecond = nextDurationMin * 60;
+        const prevDurationSecond = scene.durationMin * 60;
+        const sceneCues = await listCuesByScene(sceneId);
+        const overflowed = sceneCues.filter(
+          (cue) => cue.atSecond > nextDurationSecond && cue.atSecond <= prevDurationSecond,
+        );
+        if (overflowed.length > 0) {
+          const confirmed = await confirmOverflowSave(nextDurationMin, overflowed);
+          if (!confirmed) return;
+        }
+      }
+      await onSave(sceneId, {
+        title: title.trim() || scene.title,
+        durationMin: nextDurationMin,
+        stageNote: stageNote.trim(),
+        needsShadowScreen: screen,
+      });
+      message.success('场次明细已保存');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
