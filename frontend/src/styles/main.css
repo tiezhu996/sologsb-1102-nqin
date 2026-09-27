@@ -189,6 +189,11 @@ body::before {
   padding: 8px 8px !important;
 }
 
+/* 超出场次时长的鼓点行：淡金底提示「超出待重排」 */
+.gb-row-exceeded td {
+  background: rgba(201, 150, 60, 0.10) !important;
+}
+
 @media (max-width: 900px) {
   .gb-panel {
     padding: 12px;

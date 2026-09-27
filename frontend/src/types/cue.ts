@@ -82,3 +82,20 @@ export function createEmptyCueDraft(atSecond: number): CueDraft {
     note: '',
   };
 }
+
+/**
+ * 鼓点是否超出场次时长（落出场外）。
+ * 超出的鼓点在时间轴标为「超出待重排」，不计入已过与待走；
+ * 秒点挪回时长以内、或场次时长改回后，标记自动解除。
+ */
+export function isCueBeyondScene(cue: Pick<PercussionCue, 'atSecond'>, durationSecond: number): boolean {
+  return cue.atSecond > durationSecond;
+}
+
+/** 按秒点升序筛出超出场次时长的鼓点 */
+export function cuesBeyondScene<T extends Pick<PercussionCue, 'atSecond'>>(
+  cues: ReadonlyArray<T>,
+  durationSecond: number,
+): T[] {
+  return cues.filter((cue) => isCueBeyondScene(cue, durationSecond)).sort((a, b) => a.atSecond - b.atSecond);
+}

@@ -39,9 +39,10 @@ import { useSceneStore } from '../stores/sceneStore';
 import { useOperatorStore } from '../stores/operatorStore';
 import { ROUTES } from '../router';
 import { SHADOW_SCREEN_LABEL, SHADOW_SCREEN_OPTIONS, type SceneDraft, createEmptySceneDraft } from '../types/scene';
-import { minutesToReadable } from '../utils/timecode';
+import { BEAT_NAME_LABEL, cuesBeyondScene } from '../types/cue';
+import { minutesToReadable, secondsToTimecode } from '../utils/timecode';
 import { formatStamp } from '../utils/uuid';
-import type { SceneRow } from '../utils/db';
+import { listCuesByScene, type SceneRow } from '../utils/db';
 
 export default function SceneBoard() {
   const { id: playId = '' } = useParams<{ id: string }>();
@@ -425,7 +426,7 @@ function SceneDetailPanel({
   onRoles,
   onCues,
 }: SceneDetailPanelProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const scene = useSceneStore((state) => state.scenes.find((item) => item.id === sceneId) ?? null);
   const [title, setTitle] = useState(scene?.title ?? '');
   const [durationMin, setDurationMin] = useState(scene?.durationMin ?? 12);
@@ -441,16 +442,60 @@ function SceneDetailPanel({
     stageNote !== scene.stageNote ||
     screen !== scene.needsShadowScreen;
 
-  const save = async () => {
+  const persist = async (
+    patch: Partial<Omit<SceneRow, 'id' | 'playId' | 'createdAt' | 'revision'>>,
+    successText = '场次明细已保存',
+  ) => {
     setSaving(true);
-    await onSave(sceneId, {
+    await onSave(sceneId, patch);
+    setSaving(false);
+    message.success(successText);
+  };
+
+  /**
+   * 保存明细。时长改短时，先列出落出场外的鼓点（秒点 + 锣鼓点名），
+   * 场务确认后才落库；取消则整场不改动。
+   */
+  const save = async () => {
+    const nextDurationMin = Math.max(1, Math.round(durationMin));
+    const patch = {
       title: title.trim() || scene.title,
-      durationMin: Math.max(1, Math.round(durationMin)),
+      durationMin: nextDurationMin,
       stageNote: stageNote.trim(),
       needsShadowScreen: screen,
-    });
-    setSaving(false);
-    message.success('场次明细已保存');
+    };
+    if (nextDurationMin < scene.durationMin) {
+      const exceeded = cuesBeyondScene(await listCuesByScene(sceneId), nextDurationMin * 60);
+      if (exceeded.length > 0) {
+        modal.confirm({
+          title: `压到 ${nextDurationMin} 分钟后，${exceeded.length} 处鼓点落出场外`,
+          okText: '确认改短',
+          cancelText: '再想想',
+          content: (
+            <div>
+              <Typography.Paragraph style={{ marginBottom: 8 }}>
+                以下鼓点超出新时长，确认后将在时间轴标为「超出待重排」，不再计入已过与待走；
+                秒点挪回时长以内、或时长改回后，标记自动解除。
+              </Typography.Paragraph>
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {exceeded.map((cue) => (
+                  <li key={cue.id}>
+                    <Typography.Text className="gb-mono">{secondsToTimecode(cue.atSecond)}</Typography.Text>
+                    {' · '}
+                    {BEAT_NAME_LABEL[cue.beatName]}
+                    {cue.note ? `（${cue.note}）` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+          onOk: () =>
+            persist(patch, `场次已压到 ${nextDurationMin} 分钟，${exceeded.length} 处鼓点标为「超出待重排」`),
+        });
+        return;
+      }
+    }
+    await persist(patch);
   };
 
   return (
